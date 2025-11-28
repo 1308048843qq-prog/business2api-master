@@ -1764,6 +1764,265 @@ func main() {
 		})
 	})
 
+	// 简单可视化控制台页面（前端通过 API Key 访问 /admin JSON 接口）
+	r.GET("/admin", func(c *gin.Context) {
+		page := `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>Business2API 控制台</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { font-family: -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif; background:#0b1120; color:#e5e7eb; margin:0; padding:0; }
+    .container { max-width: 960px; margin: 0 auto; padding: 24px 16px 40px; }
+    h1 { font-size: 24px; margin: 0 0 16px; color:#f9fafb; }
+    .section { background:#020617; border:1px solid #1f2937; border-radius:12px; padding:16px 18px; margin-bottom:16px; box-shadow:0 10px 25px rgba(15,23,42,0.6); }
+    .section-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; }
+    .section-title { font-size:14px; font-weight:600; color:#9ca3af; text-transform:uppercase; letter-spacing:0.08em; }
+    .badge { font-size:12px; padding:2px 8px; border-radius:999px; background:#111827; border:1px solid #374151; color:#d1d5db; }
+    .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(120px,1fr)); gap:12px; }
+    .stat { padding:8px 10px; border-radius:10px; background:#020617; border:1px solid #111827; }
+    .stat-label { font-size:11px; text-transform:uppercase; letter-spacing:0.08em; color:#6b7280; margin-bottom:4px; }
+    .stat-value { font-size:20px; font-weight:600; color:#e5e7eb; }
+    .stat-sub { font-size:11px; color:#9ca3af; margin-top:2px; }
+    .controls { display:flex; flex-wrap:wrap; gap:8px; margin-top:8px; }
+    button { border-radius:999px; padding:7px 14px; border:none; font-size:13px; font-weight:500; cursor:pointer; display:inline-flex; align-items:center; gap:6px; }
+    button.primary { background:linear-gradient(135deg,#22c55e,#16a34a); color:#0f172a; }
+    button.secondary { background:#020617; color:#e5e7eb; border:1px solid #374151; }
+    button.danger { background:linear-gradient(135deg,#f97316,#ea580c); color:#0f172a; }
+    button:disabled { opacity:0.5; cursor:not-allowed; }
+    .dot { width:8px; height:8px; border-radius:999px; background:#22c55e; box-shadow:0 0 0 3px rgba(34,197,94,0.25); }
+    .dot.off { background:#6b7280; box-shadow:none; }
+    .log { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size:12px; background:#020617; border-radius:8px; border:1px solid #111827; padding:10px 12px; height:140px; overflow-y:auto; color:#9ca3af; }
+    .api-key-row { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-top:4px; }
+    .api-key-row input { flex:1; min-width:200px; padding:6px 10px; border-radius:999px; border:1px solid #374151; background:#020617; color:#e5e7eb; font-size:13px; }
+    .api-key-row input::placeholder { color:#6b7280; }
+    .pill { font-size:11px; padding:2px 8px; border-radius:999px; border:1px solid #374151; color:#9ca3af; }
+    .status-line { font-size:12px; color:#9ca3af; margin-top:4px; }
+    a { color:#38bdf8; text-decoration:none; }
+    a:hover { text-decoration:underline; }
+    @media (max-width:600px){ .section{padding:14px 14px;} }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;gap:8px;flex-wrap:wrap;">
+      <div>
+        <h1>Business2API 控制台</h1>
+        <div style="font-size:12px;color:#9ca3af;">查看账号池状态，手动触发注册刷新。此页面仅在浏览器本地保存 API Key。</div>
+      </div>
+      <div class="badge" id="service-indicator"><span style="display:inline-flex;align-items:center;gap:6px;"><span class="dot" id="service-dot"></span><span id="service-text">Initializing...</span></span></div>
+    </div>
+
+    <div class="section">
+      <div class="section-header">
+        <div class="section-title">API Key</div>
+      </div>
+      <div class="api-key-row">
+        <input id="apiKeyInput" type="password" placeholder="在此粘贴访问网关的 API_KEY（Bearer）" />
+        <button class="secondary" id="saveKeyBtn">保存</button>
+        <span class="pill" id="keyStatus">未保存</span>
+      </div>
+      <div class="status-line">API Key 只保存在浏览器 LocalStorage，用于访问 /admin 接口。</div>
+    </div>
+
+    <div class="section">
+      <div class="section-header">
+        <div class="section-title">账号池状态</div>
+      </div>
+      <div class="grid">
+        <div class="stat">
+          <div class="stat-label">Ready</div>
+          <div class="stat-value" id="readyCount">-</div>
+          <div class="stat-sub">可用账号数</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">Pending</div>
+          <div class="stat-value" id="pendingCount">-</div>
+          <div class="stat-sub">待刷新/待注册</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">Total</div>
+          <div class="stat-value" id="totalCount">-</div>
+          <div class="stat-sub">账号总数</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">Target / Min</div>
+          <div class="stat-value" id="targetMin">-</div>
+          <div class="stat-sub">目标 / 最小账号数</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">Registering</div>
+          <div class="stat-value" id="regStatus">-</div>
+          <div class="stat-sub">是否正在注册</div>
+        </div>
+      </div>
+      <div class="controls">
+        <button class="secondary" id="refreshStatusBtn">刷新状态</button>
+        <button class="secondary" id="reloadPoolBtn">重新加载账号池</button>
+        <button class="primary" id="triggerRegisterBtn">触发注册</button>
+      </div>
+      <div class="status-line" id="lastUpdate">最后更新: -</div>
+    </div>
+
+    <div class="section">
+      <div class="section-header">
+        <div class="section-title">运行日志（本页面）</div>
+      </div>
+      <div class="log" id="logView"></div>
+    </div>
+  </div>
+
+  <script>
+    const STORAGE_KEY = 'business2api_admin_api_key';
+    const keyInput = document.getElementById('apiKeyInput');
+    const saveKeyBtn = document.getElementById('saveKeyBtn');
+    const keyStatus = document.getElementById('keyStatus');
+    const readyEl = document.getElementById('readyCount');
+    const pendingEl = document.getElementById('pendingCount');
+    const totalEl = document.getElementById('totalCount');
+    const targetMinEl = document.getElementById('targetMin');
+    const regStatusEl = document.getElementById('regStatus');
+    const lastUpdateEl = document.getElementById('lastUpdate');
+    const logView = document.getElementById('logView');
+    const refreshStatusBtn = document.getElementById('refreshStatusBtn');
+    const reloadPoolBtn = document.getElementById('reloadPoolBtn');
+    const triggerRegisterBtn = document.getElementById('triggerRegisterBtn');
+    const serviceDot = document.getElementById('service-dot');
+    const serviceText = document.getElementById('service-text');
+
+    function log(line) {
+      const ts = new Date().toLocaleTimeString();
+      logView.textContent += '[' + ts + '] ' + line + '\n';
+      logView.scrollTop = logView.scrollHeight;
+    }
+
+    function setServiceStatus(ok) {
+      if (ok) {
+        serviceDot.classList.remove('off');
+        serviceDot.style.background = '#22c55e';
+        serviceDot.style.boxShadow = '0 0 0 3px rgba(34,197,94,0.25)';
+        serviceText.textContent = 'Online';
+      } else {
+        serviceDot.classList.add('off');
+        serviceDot.style.background = '#6b7280';
+        serviceDot.style.boxShadow = 'none';
+        serviceText.textContent = 'Offline';
+      }
+    }
+
+    function loadSavedKey() {
+      const k = localStorage.getItem(STORAGE_KEY) || '';
+      if (k) {
+        keyInput.value = k;
+        keyStatus.textContent = '已保存';
+        keyStatus.style.color = '#22c55e';
+        log('已从本地加载 API Key');
+      } else {
+        keyStatus.textContent = '未保存';
+        keyStatus.style.color = '#facc15';
+      }
+      return k;
+    }
+
+    function saveKey() {
+      const v = keyInput.value.trim();
+      if (!v) {
+        alert('请先填写 API Key');
+        return;
+      }
+      localStorage.setItem(STORAGE_KEY, v);
+      keyStatus.textContent = '已保存';
+      keyStatus.style.color = '#22c55e';
+      log('API Key 已保存到本地');
+      fetchStatus();
+    }
+
+    async function callAdmin(path, options) {
+      const apiKey = keyInput.value.trim();
+      if (!apiKey) {
+        alert('请先填写并保存 API Key');
+        return Promise.reject('no api key');
+      }
+      const opts = options || {};
+      opts.headers = Object.assign({}, opts.headers || {}, {
+        'X-API-Key': apiKey,
+        'Content-Type': 'application/json'
+      });
+      const res = await fetch('/admin' + path, opts);
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error('HTTP ' + res.status + ': ' + text);
+      }
+      return res.json();
+    }
+
+    async function fetchStatus() {
+      try {
+        const data = await callAdmin('/status');
+        readyEl.textContent = data.ready;
+        pendingEl.textContent = data.pending;
+        totalEl.textContent = data.total;
+        targetMinEl.textContent = data.target + ' / ' + data.min;
+        regStatusEl.textContent = data.is_registering ? '是' : '否';
+        lastUpdateEl.textContent = '最后更新: ' + new Date().toLocaleString();
+        setServiceStatus(true);
+      } catch (e) {
+        log('获取状态失败: ' + e.message);
+        setServiceStatus(false);
+      }
+    }
+
+    async function reloadPool() {
+      try {
+        refreshStatusBtn.disabled = true;
+        reloadPoolBtn.disabled = true;
+        triggerRegisterBtn.disabled = true;
+        const data = await callAdmin('/refresh', { method: 'POST' });
+        log('刷新账号池: ready=' + data.ready + ', pending=' + data.pending);
+        await fetchStatus();
+      } catch (e) {
+        log('刷新账号池失败: ' + e.message);
+      } finally {
+        refreshStatusBtn.disabled = false;
+        reloadPoolBtn.disabled = false;
+        triggerRegisterBtn.disabled = false;
+      }
+    }
+
+    async function triggerRegister() {
+      try {
+        refreshStatusBtn.disabled = true;
+        reloadPoolBtn.disabled = true;
+        triggerRegisterBtn.disabled = true;
+        const data = await callAdmin('/register', { method: 'POST', body: JSON.stringify({}) });
+        log('触发注册: ' + (data.message || '') + ', target=' + (data.target || '')); 
+        await fetchStatus();
+      } catch (e) {
+        log('触发注册失败: ' + e.message);
+      } finally {
+        refreshStatusBtn.disabled = false;
+        reloadPoolBtn.disabled = false;
+        triggerRegisterBtn.disabled = false;
+      }
+    }
+
+    saveKeyBtn.addEventListener('click', saveKey);
+    refreshStatusBtn.addEventListener('click', fetchStatus);
+    reloadPoolBtn.addEventListener('click', reloadPool);
+    triggerRegisterBtn.addEventListener('click', triggerRegister);
+
+    window.addEventListener('load', () => {
+      loadSavedKey();
+      fetchStatus();
+      setInterval(fetchStatus, 10000);
+    });
+  </script>
+</body>
+</html>`
+		c.Data(200, "text/html; charset=utf-8", []byte(page))
+	})
+
 	// 需要鉴权的路由组
 	api := r.Group("/")
 	api.Use(apiKeyAuth())
