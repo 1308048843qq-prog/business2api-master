@@ -9,8 +9,6 @@ data/
 
 # Node (not needed for Go build)
 node_modules/
-main.js
-package.json
 package-lock.json
 
 # IDE
