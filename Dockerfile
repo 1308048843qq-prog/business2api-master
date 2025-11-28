@@ -36,11 +36,18 @@ RUN apt-get update && \
 # 拷贝 Go 二进制
 COPY --from=builder /app/business2api .
 
-# 拷贝注册脚本及依赖说明
-COPY package.json main.js gemini-automation.js ./
+# 拷贝注册脚本（仅 main.js，避免依赖 package.json 是否存在）
+COPY main.js ./
 
-# 安装 Node 依赖（puppeteer / axios / imap-simple / mailparser）
-RUN npm install --omit=dev
+# 如果仓库中没有 gemini-automation.js，则在容器内生成一个简单入口
+RUN if [ -f gemini-automation.js ]; then echo "use existing gemini-automation.js"; else echo "require('./main');" > gemini-automation.js; fi
+
+# 直接安装所需依赖（不依赖 package.json 存在）
+RUN npm install --omit=dev \
+    puppeteer@^21.0.0 \
+    axios@^1.6.0 \
+    imap-simple@^5.0.0 \
+    mailparser@^3.6.4
 
 # 拷贝配置模板并作为默认 config.json
 COPY config.json.example ./config.json.example
