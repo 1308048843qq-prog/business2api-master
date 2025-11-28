@@ -27,13 +27,8 @@ import (
 // ==================== 配置结构 ====================
 
 type PoolConfig struct {
-	TargetCount          int    `json:"target_count"`           // 目标账号数量
-	MinCount             int    `json:"min_count"`              // 最小账号数，低于此值触发注册
-	CheckIntervalMinutes int    `json:"check_interval_minutes"` // 检查间隔(分钟)
-	RegisterThreads      int    `json:"register_threads"`       // 注册线程数
-	RegisterHeadless     bool   `json:"register_headless"`      // 无头模式
-	RegisterScript       string `json:"register_script"`        // 注册脚本路径
-	RefreshOnStartup     bool   `json:"refresh_on_startup"`     // 启动时刷新账号
+	TargetCount int `json:"target_count"` // 目标账号数量（仅用于展示）
+	MinCount    int `json:"min_count"`    // 最小账号数（仅用于展示）
 }
 
 type AppConfig struct {
@@ -49,13 +44,8 @@ var appConfig = AppConfig{
 	ListenAddr: ":8000",
 	DataDir:    "./data",
 	Pool: PoolConfig{
-		TargetCount:          50,
-		MinCount:             10,
-		CheckIntervalMinutes: 30,
-		RegisterThreads:      1,
-		RegisterHeadless:     true,
-		RegisterScript:       "../main.js",
-		RefreshOnStartup:     true,
+		TargetCount: 50,
+		MinCount:    10,
 	},
 }
 
@@ -328,6 +318,14 @@ func (p *AccountPool) refreshWorker(id int) {
 		}
 		acc.JWTExpires = time.Time{}
 		if err := acc.RefreshJWT(); err != nil {
+			// 对“刷新冷却中”这种临时错误，不删除账号，仅放回待刷新队列
+			if strings.Contains(err.Error(), "刷新冷却中") {
+				log.Printf("⚠️ [worker-%d] [%s] 刷新跳过（冷却中）: %v", id, acc.Data.Email, err)
+				p.MarkPending(acc)
+				// 稍作等待，避免紧密轮询
+				time.Sleep(time.Second)
+				continue
+			}
 			log.Printf("❌ [worker-%d] [%s] 刷新失败: %v", id, acc.Data.Email, err)
 			p.RemoveAccount(acc)
 		} else {
@@ -1715,33 +1713,8 @@ func main() {
 		log.Println("⚠️ 未配置 API Key，API 将无鉴权运行")
 	}
 
-	// 检查注册脚本
-	if appConfig.Pool.RegisterScript != "" {
-		scriptPath := appConfig.Pool.RegisterScript
-		if !filepath.IsAbs(scriptPath) {
-			scriptPath, _ = filepath.Abs(scriptPath)
-		}
-		if _, err := os.Stat(scriptPath); err != nil {
-			log.Printf("⚠️ 注册脚本不存在: %s", scriptPath)
-		}
-	}
-
-	// 异步启动号池管理器（负责刷新账号）
-	if appConfig.Pool.RefreshOnStartup {
-		pool.StartPoolManager()
-	}
-
-	// 如果账号数为 0，尝试自动注册
-	if pool.TotalCount() == 0 && appConfig.Pool.RegisterScript != "" {
-		needCount := appConfig.Pool.TargetCount
-		log.Printf("📝 无账号，启动注册 %d 个...", needCount)
-		startRegister(needCount)
-	}
-
-	// 启动号池维护协程（检查账号数量并触发注册）
-	if appConfig.Pool.CheckIntervalMinutes > 0 && appConfig.Pool.RegisterScript != "" {
-		go poolMaintainer()
-	}
+	// 异步启动号池管理器（仅负责刷新已有账号，不再自动注册新账号）
+	pool.StartPoolManager()
 
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
@@ -1852,17 +1825,47 @@ func main() {
           <div class="stat-sub">目标 / 最小账号数</div>
         </div>
         <div class="stat">
-          <div class="stat-label">Registering</div>
-          <div class="stat-value" id="regStatus">-</div>
-          <div class="stat-sub">是否正在注册</div>
-        </div>
       </div>
       <div class="controls">
         <button class="secondary" id="refreshStatusBtn">刷新状态</button>
         <button class="secondary" id="reloadPoolBtn">重新加载账号池</button>
-        <button class="primary" id="triggerRegisterBtn">触发注册</button>
       </div>
       <div class="status-line" id="lastUpdate">最后更新: -</div>
+    </div>
+
+    <div class="section">
+      <div class="section-header">
+        <div class="section-title">手动注入账号</div>
+      </div>
+      <div class="status-line">在这里粘贴你手动获取的 Cookie 和参数，点击解析后会自动填充下面的表单，再点击注入即可写入账号池。</div>
+      <div class="api-key-row" style="margin-top:8px;">
+        <textarea id="injectRaw" placeholder="在这里粘贴如下多行内容:\nSECURE_C_SES=...\nCSESIDX=...\nCONFIG_ID=...\nHOST_C_OSES=...\nPROXY=..." style="width:100%;min-height:80px;border-radius:12px;border:1px solid #374151;background:#020617;color:#e5e7eb;font-size:12px;padding:8px 10px;resize:vertical;"></textarea>
+      </div>
+      <div class="controls" style="margin-top:8px;">
+        <button class="secondary" id="injectParseBtn">从文本解析</button>
+      </div>
+      <div class="api-key-row" style="margin-top:8px;">
+        <input id="injectEmail" type="text" placeholder="邮箱（建议填 Workspace 账号邮箱）" />
+      </div>
+      <div class="api-key-row" style="margin-top:8px;">
+        <input id="injectSecure" type="text" placeholder="SECURE_C_SES" />
+      </div>
+      <div class="api-key-row" style="margin-top:8px;">
+        <input id="injectHost" type="text" placeholder="HOST_C_OSES（可选）" />
+      </div>
+      <div class="api-key-row" style="margin-top:8px;">
+        <input id="injectCsesidx" type="text" placeholder="CSESIDX" />
+      </div>
+      <div class="api-key-row" style="margin-top:8px;">
+        <input id="injectConfigId" type="text" placeholder="CONFIG_ID（可选，不填用全局 CONFIG_ID）" />
+      </div>
+      <div class="api-key-row" style="margin-top:8px;">
+        <input id="injectAuth" type="text" placeholder="Authorization（可选，原始 Bearer token）" />
+      </div>
+      <div class="controls" style="margin-top:8px;">
+        <button class="primary" id="injectSubmitBtn">注入账号</button>
+      </div>
+      <div class="status-line" id="injectStatus">未提交</div>
     </div>
 
     <div class="section">
@@ -1882,19 +1885,64 @@ func main() {
     const pendingEl = document.getElementById('pendingCount');
     const totalEl = document.getElementById('totalCount');
     const targetMinEl = document.getElementById('targetMin');
-    const regStatusEl = document.getElementById('regStatus');
     const lastUpdateEl = document.getElementById('lastUpdate');
     const logView = document.getElementById('logView');
     const refreshStatusBtn = document.getElementById('refreshStatusBtn');
     const reloadPoolBtn = document.getElementById('reloadPoolBtn');
-    const triggerRegisterBtn = document.getElementById('triggerRegisterBtn');
     const serviceDot = document.getElementById('service-dot');
     const serviceText = document.getElementById('service-text');
+    const injectRaw = document.getElementById('injectRaw');
+    const injectParseBtn = document.getElementById('injectParseBtn');
+    const injectEmail = document.getElementById('injectEmail');
+    const injectSecure = document.getElementById('injectSecure');
+    const injectHost = document.getElementById('injectHost');
+    const injectCsesidx = document.getElementById('injectCsesidx');
+    const injectConfigId = document.getElementById('injectConfigId');
+    const injectAuth = document.getElementById('injectAuth');
+    const injectSubmitBtn = document.getElementById('injectSubmitBtn');
+    const injectStatus = document.getElementById('injectStatus');
 
     function log(line) {
       const ts = new Date().toLocaleTimeString();
       logView.textContent += '[' + ts + '] ' + line + '\n';
       logView.scrollTop = logView.scrollHeight;
+    }
+
+    function parseRawLines() {
+      if (!injectRaw) return;
+      const text = injectRaw.value || '';
+      if (!text.trim()) {
+        alert('请先粘贴包含 SECURE_C_SES 等内容的文本');
+        return;
+      }
+      const lines = text.split(/\r?\n/);
+      const map = {};
+      for (const rawLine of lines) {
+        const line = rawLine.trim();
+        if (!line || line.startsWith('#')) continue;
+        const eq = line.indexOf('=');
+        if (eq <= 0) continue;
+        const k = line.slice(0, eq).trim().toUpperCase();
+        const v = line.slice(eq + 1).trim();
+        if (!v) continue;
+        map[k] = v;
+      }
+      if (map['SECURE_C_SES'] && injectSecure) {
+        injectSecure.value = map['SECURE_C_SES'];
+      }
+      if (map['CSESIDX'] && injectCsesidx) {
+        injectCsesidx.value = map['CSESIDX'];
+      }
+      if (map['CONFIG_ID'] && injectConfigId) {
+        injectConfigId.value = map['CONFIG_ID'];
+      }
+      if (map['HOST_C_OSES'] && injectHost) {
+        injectHost.value = map['HOST_C_OSES'];
+      }
+      if (map['PROXY']) {
+        log('已解析 PROXY (当前后端未直接使用，可按需在环境变量中配置代理)');
+      }
+      log('已从文本解析参数: ' + Object.keys(map).join(', '));
     }
 
     function setServiceStatus(ok) {
@@ -1964,7 +2012,6 @@ func main() {
         pendingEl.textContent = data.pending;
         totalEl.textContent = data.total;
         targetMinEl.textContent = data.target + ' / ' + data.min;
-        regStatusEl.textContent = data.is_registering ? '是' : '否';
         lastUpdateEl.textContent = '最后更新: ' + new Date().toLocaleString();
         setServiceStatus(true);
       } catch (e) {
@@ -1977,7 +2024,6 @@ func main() {
       try {
         refreshStatusBtn.disabled = true;
         reloadPoolBtn.disabled = true;
-        triggerRegisterBtn.disabled = true;
         const data = await callAdmin('/refresh', { method: 'POST' });
         log('刷新账号池: ready=' + data.ready + ', pending=' + data.pending);
         await fetchStatus();
@@ -1986,31 +2032,60 @@ func main() {
       } finally {
         refreshStatusBtn.disabled = false;
         reloadPoolBtn.disabled = false;
-        triggerRegisterBtn.disabled = false;
       }
     }
 
-    async function triggerRegister() {
+    async function injectAccount() {
       try {
-        refreshStatusBtn.disabled = true;
-        reloadPoolBtn.disabled = true;
-        triggerRegisterBtn.disabled = true;
-        const data = await callAdmin('/register', { method: 'POST', body: JSON.stringify({}) });
-        log('触发注册: ' + (data.message || '') + ', target=' + (data.target || '')); 
+        const email = (injectEmail && injectEmail.value.trim()) || '';
+        const secure = (injectSecure && injectSecure.value.trim()) || '';
+        const csesidx = (injectCsesidx && injectCsesidx.value.trim()) || '';
+        if (!email || !secure || !csesidx) {
+          alert('请至少填写邮箱、SECURE_C_SES、CSESIDX');
+          return;
+        }
+        if (injectSubmitBtn) {
+          injectSubmitBtn.disabled = true;
+        }
+        if (injectStatus) {
+          injectStatus.textContent = '提交中...';
+        }
+        const payload = {
+          email: email,
+          full_name: '',
+          secure_c_ses: secure,
+          host_c_oses: (injectHost && injectHost.value.trim()) || '',
+          csesidx: csesidx,
+          config_id: (injectConfigId && injectConfigId.value.trim()) || '',
+          authorization: (injectAuth && injectAuth.value.trim()) || ''
+        };
+        const data = await callAdmin('/account', { method: 'POST', body: JSON.stringify(payload) });
+        if (injectStatus) {
+          injectStatus.textContent = '成功：' + (data.file || '') + '，total=' + data.total;
+        }
+        log('注入账号成功: ' + email + ' -> ready=' + data.ready + ', pending=' + data.pending + ', total=' + data.total);
         await fetchStatus();
       } catch (e) {
-        log('触发注册失败: ' + e.message);
+        if (injectStatus) {
+          injectStatus.textContent = '失败：' + e.message;
+        }
+        log('注入账号失败: ' + e.message);
       } finally {
-        refreshStatusBtn.disabled = false;
-        reloadPoolBtn.disabled = false;
-        triggerRegisterBtn.disabled = false;
+        if (injectSubmitBtn) {
+          injectSubmitBtn.disabled = false;
+        }
       }
     }
 
     saveKeyBtn.addEventListener('click', saveKey);
     refreshStatusBtn.addEventListener('click', fetchStatus);
     reloadPoolBtn.addEventListener('click', reloadPool);
-    triggerRegisterBtn.addEventListener('click', triggerRegister);
+    if (injectSubmitBtn) {
+      injectSubmitBtn.addEventListener('click', injectAccount);
+    }
+    if (injectParseBtn) {
+      injectParseBtn.addEventListener('click', parseRawLines);
+    }
 
     window.addEventListener('load', () => {
       loadSavedKey();
@@ -2062,25 +2137,6 @@ func main() {
 	admin := r.Group("/admin")
 	admin.Use(apiKeyAuth())
 
-	// 手动触发注册
-	admin.POST("/register", func(c *gin.Context) {
-		var req struct {
-			Count int `json:"count"`
-		}
-		if err := c.ShouldBindJSON(&req); err != nil || req.Count <= 0 {
-			req.Count = appConfig.Pool.TargetCount - pool.Count()
-		}
-		if req.Count <= 0 {
-			c.JSON(200, gin.H{"message": "账号数量已足够", "count": pool.Count()})
-			return
-		}
-		if err := startRegister(req.Count); err != nil {
-			c.JSON(500, gin.H{"error": err.Error()})
-			return
-		}
-		c.JSON(200, gin.H{"message": "注册已启动", "target": req.Count})
-	})
-
 	// 刷新账号池
 	admin.POST("/refresh", func(c *gin.Context) {
 		pool.Load(DataDir)
@@ -2099,7 +2155,81 @@ func main() {
 			"total":          pool.TotalCount(),
 			"target":         appConfig.Pool.TargetCount,
 			"min":            appConfig.Pool.MinCount,
-			"is_registering": atomic.LoadInt32(&isRegistering) == 1,
+		})
+	})
+
+	// 手动注入账号
+	admin.POST("/account", func(c *gin.Context) {
+		var req struct {
+			Email         string `json:"email"`
+			FullName      string `json:"full_name"`
+			SecureCSES    string `json:"secure_c_ses"`
+			HostCOSES     string `json:"host_c_oses"`
+			CSESIDX       string `json:"csesidx"`
+			ConfigID      string `json:"config_id"`
+			Authorization string `json:"authorization"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(400, gin.H{"error": err.Error()})
+			return
+		}
+
+		if req.Email == "" || req.SecureCSES == "" || req.CSESIDX == "" {
+			c.JSON(400, gin.H{"error": "email、SECURE_C_SES、CSESIDX 为必填"})
+			return
+		}
+
+		configID := req.ConfigID
+		if configID == "" && DefaultConfig != "" {
+			configID = DefaultConfig
+		}
+
+		accData := AccountData{
+			Email:         req.Email,
+			FullName:      req.FullName,
+			Authorization: req.Authorization,
+			Cookies: []Cookie{
+				{Name: "__Secure-C_SES", Value: req.SecureCSES, Domain: "business.gemini.google"},
+			},
+			Timestamp: time.Now().Format(time.RFC3339),
+			ConfigID:  configID,
+			CSESIDX:   req.CSESIDX,
+		}
+		if req.HostCOSES != "" {
+			accData.Cookies = append(accData.Cookies, Cookie{
+				Name:   "__Host-C_OSES",
+				Value:  req.HostCOSES,
+				Domain: "business.gemini.google",
+			})
+		}
+
+		// 基于邮箱生成文件名
+		base := strings.ReplaceAll(req.Email, "@", "_at_")
+		base = strings.ReplaceAll(base, ":", "_")
+		base = strings.ReplaceAll(base, "/", "_")
+		filePath := filepath.Join(DataDir, base+".json")
+
+		data, err := json.MarshalIndent(accData, "", "  ")
+		if err != nil {
+			c.JSON(500, gin.H{"error": err.Error()})
+			return
+		}
+		if err := os.WriteFile(filePath, data, 0644); err != nil {
+			c.JSON(500, gin.H{"error": err.Error()})
+			return
+		}
+
+		if err := pool.Load(DataDir); err != nil {
+			c.JSON(500, gin.H{"error": "账号写入成功，但重新加载账号池失败: " + err.Error()})
+			return
+		}
+
+		c.JSON(200, gin.H{
+			"message": "账号已注入",
+			"file":    filepath.Base(filePath),
+			"ready":   pool.ReadyCount(),
+			"pending": pool.PendingCount(),
+			"total":   pool.TotalCount(),
 		})
 	})
 
